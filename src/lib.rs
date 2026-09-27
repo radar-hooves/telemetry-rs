@@ -2,7 +2,9 @@
 //!
 //! [`init`] installs a stderr layer for the developer and, when an exporter is
 //! configured, an allow-listed OTLP/HTTP protobuf log and span exporter for the
-//! corpus; [`http_client`] carries W3C trace context outbound.
+//! corpus; [`http_client`] carries W3C trace context outbound; a panic anywhere
+//! in the process reaches the corpus too, through the same one call — see
+//! `panic` for the content-safety rule that governs what a crash may carry.
 //!
 //! The exporter may arrive from the environment, as `OTEL_EXPORTER_OTLP_*`, or
 //! from the application's own settings through [`Guard::set_exporter`] — an app
@@ -19,8 +21,10 @@
 mod allow;
 mod bearer;
 mod client;
+mod panic;
 mod probe;
 
+pub use panic::report_error;
 pub use probe::{ProbeError, probe};
 
 use std::collections::HashMap;
@@ -214,6 +218,7 @@ impl Guard {
             return;
         }
         let previous = std::mem::replace(&mut *live, providers);
+        panic::set_live(live.as_ref().map(|p| &p.logs));
         *lock(&self.exporter) = exporter;
         drop(live);
         self.retire(previous);
@@ -233,6 +238,11 @@ impl Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
+        // An empty `Guard` from a second `init()` call installed nothing, so it
+        // must not clear the one real `Guard`'s record of the live provider.
+        if self.installed.is_some() {
+            panic::set_live(None);
+        }
         if let Some(providers) = lock(&self.providers).take() {
             shutdown(providers);
         }
@@ -273,6 +283,11 @@ fn shutdown(providers: Providers) {
 /// app launched from a Dock has none, so [`Guard::set_exporter`] can supply one
 /// at runtime from the application's own settings — but only where the
 /// environment set nothing.
+///
+/// A panic anywhere in the process afterwards is reported as one crash event,
+/// content-safe by construction (see `panic`'s module docs), and flushed within
+/// a bounded budget before the chained, previously installed hook — Rust's own
+/// default, or an app's own if it set one first — runs in turn.
 ///
 /// Never fails: an unset endpoint, or a missing or failing header helper, degrades
 /// to stderr only with one line saying which. The only blocking work is the header
@@ -355,6 +370,8 @@ pub fn init(
         Plan::Otlp(_) if providers.is_none() => tracing::debug!("telemetry: no exporter built"),
         Plan::Otlp(_) => {}
     }
+    panic::set_live(providers.as_ref().map(|p| &p.logs));
+    panic::install();
     Guard {
         providers: Mutex::new(providers),
         retiring: Mutex::new(None),

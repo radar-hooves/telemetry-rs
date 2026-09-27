@@ -17,10 +17,14 @@ fn matches(target: &str, entry: &str) -> bool {
 }
 
 /// True when `target` is on the allow-list. This crate's own client spans carry
-/// only a method, a host and a status (`client.rs`), so they are always allowed —
-/// under the same equality-or-`::` rule as a caller's entry, never a bare prefix.
+/// only a method, a host and a status (`client.rs`), and its crash and error
+/// events carry only a location, a thread and a content-safe payload
+/// (`panic.rs`), so both are always allowed — under the same equality-or-`::`
+/// rule as a caller's entry, never a bare prefix.
 pub(crate) fn allowed(target: &str, allow: &[&str]) -> bool {
-    matches(target, crate::client::TARGET) || allow.iter().any(|entry| matches(target, entry))
+    matches(target, crate::client::TARGET)
+        || matches(target, crate::panic::TARGET)
+        || allow.iter().any(|entry| matches(target, entry))
 }
 
 /// The filter both OTLP layers share: the allow-list, with a level floor of INFO.
@@ -66,6 +70,15 @@ mod tests {
         assert!(allowed("telemetry::client::retry", &[]));
         assert!(
             !allowed("telemetry::client_of_someone_else", &[]),
+            "the force-allow is not a bare prefix either"
+        );
+    }
+
+    #[test]
+    fn the_crates_own_crash_and_error_events_are_always_allowed() {
+        assert!(allowed(crate::panic::TARGET, &[]));
+        assert!(
+            !allowed("telemetry::panicky", &[]),
             "the force-allow is not a bare prefix either"
         );
     }

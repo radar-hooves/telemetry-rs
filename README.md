@@ -3,7 +3,7 @@
 The household's one Rust telemetry call. It writes no file, exports no metrics, reads no settings file of its own, and knows no broker, identity or token: the endpoint and the credential reach it as standard environment variables the fleet sets, or as a value the application hands it from its own Settings pane.
 
 ```toml
-telemetry = { git = "https://github.com/radar-hooves/telemetry-rs", tag = "v0.2.0" }
+telemetry = { git = "https://github.com/radar-hooves/telemetry-rs", tag = "v0.3.0" }
 ```
 
 ## The one call
@@ -67,6 +67,24 @@ match telemetry::probe(&exporter) {
 **The environment wins.** Where the fleet set `OTEL_EXPORTER_OTLP_ENDPOINT`, `set_exporter` is a no-op that logs one line. `Guard::exporter()` gives the pane the value to show and `Guard::exporter_is_from_env()` tells it to show that value read-only. `Exporter::from_env()` is the crate's one reader of those variables, so `init` and the pane cannot disagree.
 
 `probe` sends a single INFO record to `<endpoint>/v1/logs` through the same header client the exporters use, bounded by the OTLP timeout. `ProbeError` is `Helper`, `Connect`, `Tls`, `Timeout`, `Transport` or `Status(u16)` — a class or an HTTP status, and never a URL, a header value or a response body.
+
+## The crash reporter
+
+`init` also installs a panic hook, chained to whatever was there before (Rust's own default, or an app's own if it set one first, in which case that still runs too). A panic anywhere in the process becomes one ERROR event on `telemetry::panic`, force-allowed past the caller's allow-list exactly as the client span is, and flushed within a bounded budget before the chained hook runs.
+
+The event always carries the thread name and the panic's file and line. The payload is carried only when its type proves it holds no runtime data: `panic!("a literal")`, `unreachable!()` and `todo!()` all downcast to `&'static str`, fixed at compile time, so that text is exported. `panic!("{}", value)`, `.expect(&built_string)` and anything else assembled at runtime downcasts to `String` instead; that shape is never inspected, and the event says the message was withheld.
+
+`telemetry::report_error(context: &'static str)` gives an application the same force-allowed target for a caught error, without hand-rolling one: `context` must be `&'static str`, so only a compile-time literal can reach it.
+
+```rust
+match some_fallible_call() {
+    Ok(value) => value,
+    Err(_) => {
+        telemetry::report_error("some_fallible_call failed");
+        default_value()
+    }
+}
+```
 
 ## The variables
 
