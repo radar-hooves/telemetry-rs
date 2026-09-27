@@ -1,6 +1,6 @@
 [package]
 name = "telemetry"
-version = "0.3.0"
+version = "0.4.0"
 description = "The household's one Rust telemetry call: stderr for the developer, allow-listed OTLP/HTTP for the corpus"
 authors = ["poodle64"]
 license = "MIT"

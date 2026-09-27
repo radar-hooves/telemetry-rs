@@ -3,7 +3,7 @@
 The household's one Rust telemetry call. It writes no file, exports no metrics, reads no settings file of its own, and knows no broker, identity or token: the endpoint and the credential reach it as standard environment variables the fleet sets, or as a value the application hands it from its own Settings pane.
 
 ```toml
-telemetry = { git = "https://github.com/radar-hooves/telemetry-rs", tag = "v0.3.0" }
+telemetry = { git = "https://github.com/radar-hooves/telemetry-rs", tag = "v0.4.0" }
 ```
 
 ## The one call
@@ -72,15 +72,15 @@ match telemetry::probe(&exporter) {
 
 `init` also installs a panic hook, chained to whatever was there before (Rust's own default, or an app's own if it set one first, in which case that still runs too). A panic anywhere in the process becomes one ERROR event on `telemetry::panic`, force-allowed past the caller's allow-list exactly as the client span is, and flushed within a bounded budget before the chained hook runs.
 
-The event always carries the thread name and the panic's file and line. The payload is carried only when its type proves it holds no runtime data: `panic!("a literal")`, `unreachable!()` and `todo!()` all downcast to `&'static str`, fixed at compile time, so that text is exported. `panic!("{}", value)`, `.expect(&built_string)` and anything else assembled at runtime downcasts to `String` instead; that shape is never inspected, and the event says the message was withheld.
+The event always carries the thread name, the panic's file and line, its full message, and a backtrace forced with `Backtrace::force_capture()`, present whether or not `RUST_BACKTRACE` is set. `panic!("a literal")`, `panic!("{value}")` and `.expect(&built_string)` are all exported in full: this is the operator's own stack, and the OTLP endpoint is his own self-hosted collector, so nothing this captures leaves his estate. See the CHANGELOG for his ruling.
 
-`telemetry::report_error(context: &'static str)` gives an application the same force-allowed target for a caught error, without hand-rolling one: `context` must be `&'static str`, so only a compile-time literal can reach it.
+`telemetry::report_error(context: &'static str)` gives an application the same force-allowed target for a caught condition with no `Error` value to hand, without hand-rolling one: `context` must be `&'static str`, so only a compile-time literal can reach it. `telemetry::report_error_with_cause` is its companion, for a caller that does have the error: it carries the error's own message and its whole `source()` chain, so a caught error is never flattened to a static label.
 
 ```rust
 match some_fallible_call() {
     Ok(value) => value,
-    Err(_) => {
-        telemetry::report_error("some_fallible_call failed");
+    Err(err) => {
+        telemetry::report_error_with_cause("some_fallible_call failed", &err);
         default_value()
     }
 }

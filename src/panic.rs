@@ -1,21 +1,21 @@
-//! The one crash event, and the one content-free error event beside it.
+//! The one crash event, and the two error events beside it.
 //!
 //! A panic anywhere in the process is reported as one ERROR event on this
 //! crate's own force-allowed target (`allow::allowed` treats it exactly as it
-//! treats `client::TARGET`), carrying the thread name and the panic location
-//! always. The payload is carried only when its *type* proves it cannot hold
-//! runtime data: `panic!("literal")`, `unreachable!()` and `todo!()` all
-//! downcast to `&'static str`, a value fixed at compile time, while
-//! `panic!("{}", x)`, `.expect(&format!(...))` and anything built with
-//! interpolation downcast to `String` instead — and that shape is never
-//! inspected, only named as withheld. This is the same rule `client.rs`
-//! applies to a failed request: a class or a location is safe to export by
-//! construction, a message is not, unless its type says otherwise.
+//! treats `client::TARGET`), carrying the thread name, the panic location, the
+//! full message and a forced backtrace, always: this is the operator's own
+//! stack, the OTLP endpoint is his own self-hosted collector, and nothing here
+//! leaves his estate. See the CHANGELOG for his ruling in his own words. A
+//! failed request's URL is a different case, still withheld by `client.rs`:
+//! that value can carry a search term or a query-string credential, where a
+//! panic payload built inside this crate's own process cannot.
 //!
-//! [`report_error`] gives an application the same content-free target for its
-//! own caught errors, without hand-rolling one: `context` is typed
-//! `&'static str`, so only a compile-time literal can be passed without
-//! deliberately defeating `&'static` — the type is the safety property.
+//! [`report_error`] stays the content-free target for an application that has
+//! no [`std::error::Error`] to hand — `context` is typed `&'static str`, so
+//! only a compile-time literal can be passed without deliberately defeating
+//! `&'static`. [`report_error_with_cause`] is its companion: it takes the
+//! error itself and carries its full message and its whole `source()` chain,
+//! so a caller stops flattening a real error to a static label.
 
 use std::cell::Cell;
 use std::panic::PanicHookInfo;
@@ -95,33 +95,64 @@ fn report(info: &PanicHookInfo<'_>) {
         .location()
         .map(|l| (l.file(), l.line()))
         .unwrap_or(("<unknown>", 0));
+    let payload = payload_message(info.payload());
+    // `force_capture` ignores `RUST_BACKTRACE`: a crash on a stranger's
+    // machine, or a fleet host that never set the variable, still carries one.
+    let backtrace = std::backtrace::Backtrace::force_capture();
 
-    match literal_payload(info.payload()) {
-        Some(payload) => tracing::error!(target: TARGET, thread, file, line, payload, "panic"),
-        None => {
-            tracing::error!(target: TARGET, thread, file, line, "panic, message withheld: not a compile-time literal")
-        }
-    }
+    tracing::error!(target: TARGET, thread, file, line, payload, backtrace = %backtrace, "panic");
     flush();
 }
 
 /// A content-free way to record that something went wrong, for an application
-/// that would otherwise hand-roll its own force-allowed target for a caught
-/// error. `context` is a compile-time literal by construction: `&'static str`
-/// cannot carry a value built at runtime without deliberately leaking one, the
-/// same trust boundary `init`'s own `allow: &'static [&'static str]` already
-/// rests on.
+/// that has no [`std::error::Error`] to hand and would otherwise hand-roll its
+/// own force-allowed target for a caught error. `context` is a compile-time
+/// literal by construction: `&'static str` cannot carry a value built at
+/// runtime without deliberately leaking one, the same trust boundary `init`'s
+/// own `allow: &'static [&'static str]` already rests on.
+///
+/// [`report_error_with_cause`] is the companion for a caller that does have
+/// the error itself and wants its message and cause chain carried too.
 pub fn report_error(context: &'static str) {
     tracing::error!(target: TARGET, context, "error");
 }
 
+/// The same force-allowed target as [`report_error`], carrying the error's own
+/// full `Display` message and its whole `source()` chain, so a caller stops
+/// flattening a real error to a static label. `context` still identifies the
+/// call site, exactly as it does for [`report_error`].
+pub fn report_error_with_cause(context: &'static str, error: &dyn std::error::Error) {
+    let chain = error_chain(error);
+    tracing::error!(target: TARGET, context, chain, "error");
+}
+
+/// The error's own message, then each `source()` after it, joined so the
+/// whole chain reads as one line: an app's error wraps a lower one for a
+/// reason, and the reason is only visible with both ends of the chain.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut chain = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        chain.push_str(": ");
+        chain.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    chain
+}
+
 /// `panic!("literal")`, `unreachable!()` and `todo!()` all downcast to
-/// `&'static str` — a payload fixed at compile time. `panic!("{}", x)`,
-/// `.expect(&built_string)` and anything else assembled at runtime downcasts
-/// to `String` instead, and is never inspected: that shape is exactly the one
-/// that can hold what the panic was actually about.
-fn literal_payload(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
-    payload.downcast_ref::<&str>().copied()
+/// `&'static str` — a payload fixed at compile time. `panic!("{}", x)` and
+/// `.expect(&built_string)` downcast to `String` instead. Both are exported in
+/// full; only a payload built with `panic_any` of some third type — neither
+/// shape the standard library's own panicking path ever produces — falls back
+/// to a fixed placeholder, since there is nothing safe to assume about a type
+/// this crate cannot name.
+fn payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<panic payload was neither &str nor String>")
 }
 
 /// Force-flush the live logs provider on a thread of its own, bounded by
@@ -160,15 +191,59 @@ mod tests {
     use super::*;
     use crate::{Providers, otlp_layers, subscriber};
     use opentelemetry::InstrumentationScope;
+    use opentelemetry::logs::AnyValue;
     use opentelemetry_sdk::Resource;
     use opentelemetry_sdk::logs::{
         InMemoryLogExporter, LogProcessor, SdkLogRecord, SimpleLogProcessor,
     };
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SimpleSpanProcessor};
     use serial_test::serial;
+    use std::fmt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Instant;
+
+    /// A root cause two levels down from what a caller actually catches, so a
+    /// test can prove the whole `source()` chain is carried, not just the
+    /// top-level error's own message.
+    #[derive(Debug)]
+    struct RootCause;
+
+    impl fmt::Display for RootCause {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "the root cause")
+        }
+    }
+
+    impl std::error::Error for RootCause {}
+
+    #[derive(Debug)]
+    struct WrappingError(RootCause);
+
+    impl fmt::Display for WrappingError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "the wrapping failure")
+        }
+    }
+
+    impl std::error::Error for WrappingError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    /// An attribute's value, rendered the way its own type would render it —
+    /// `String` as itself, anything else through `Debug` — so a test can read
+    /// a specific field without depending on how the whole record's `Debug`
+    /// escapes it.
+    fn attribute(record: &SdkLogRecord, key: &str) -> Option<String> {
+        record.attributes_iter().find_map(|(k, v)| {
+            (k.as_str() == key).then(|| match v {
+                AnyValue::String(s) => s.as_str().to_owned(),
+                other => format!("{other:?}"),
+            })
+        })
+    }
 
     fn in_memory() -> (Providers, InMemoryLogExporter) {
         let logs = InMemoryLogExporter::default();
@@ -213,23 +288,54 @@ mod tests {
         assert!(rendered.contains("panic.rs"), "{rendered}");
     }
 
+    /// The operator's ruling of 28/09/2026 replaces the v0.3.0 rule that
+    /// withheld this shape of payload: a formatted panic must now export its
+    /// full message and a backtrace, forced regardless of `RUST_BACKTRACE`.
     #[test]
     #[serial]
-    fn a_formatted_payload_panic_exports_no_message_text() {
+    fn a_formatted_panic_exports_its_full_message_and_a_backtrace() {
         let (providers, logs) = in_memory();
         set_live(Some(&providers.logs));
         let (subscriber, _reload) = subscriber(&[], otlp_layers("test-service", &providers));
 
-        let runtime_value = "a-runtime-value-nobody-should-see".to_owned();
+        let runtime_value = "a-runtime-value-built-at-panic-time".to_owned();
         tracing::subscriber::with_default(subscriber, || {
             under_bare_report_hook(move || panic!("{runtime_value}"));
         });
         set_live(None);
 
         let exported = logs.get_emitted_logs().expect("logs");
-        let rendered = format!("{exported:?}");
-        assert!(!rendered.contains("a-runtime-value"), "{rendered}");
-        assert!(rendered.contains("withheld"), "{rendered}");
+        let record = exported.first().expect("one crash event");
+        let payload = attribute(&record.record, "payload").expect("a payload field");
+        assert!(
+            payload.contains("a-runtime-value-built-at-panic-time"),
+            "{payload}"
+        );
+
+        let backtrace = attribute(&record.record, "backtrace").expect("a backtrace field");
+        assert!(
+            backtrace.len() > 100,
+            "a forced backtrace should carry more than a placeholder: {backtrace}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn report_error_with_cause_exports_the_whole_source_chain() {
+        let (providers, logs) = in_memory();
+        set_live(Some(&providers.logs));
+        let (subscriber, _reload) = subscriber(&[], otlp_layers("test-service", &providers));
+
+        tracing::subscriber::with_default(subscriber, || {
+            report_error_with_cause("thing failed", &WrappingError(RootCause));
+        });
+        set_live(None);
+
+        let exported = logs.get_emitted_logs().expect("logs");
+        let record = exported.first().expect("one error event");
+        let chain = attribute(&record.record, "chain").expect("a chain field");
+        assert!(chain.contains("the wrapping failure"), "{chain}");
+        assert!(chain.contains("the root cause"), "{chain}");
     }
 
     #[test]

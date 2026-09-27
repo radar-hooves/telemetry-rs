@@ -24,7 +24,7 @@ mod client;
 mod panic;
 mod probe;
 
-pub use panic::report_error;
+pub use panic::{report_error, report_error_with_cause};
 pub use probe::{ProbeError, probe};
 
 use std::collections::HashMap;
