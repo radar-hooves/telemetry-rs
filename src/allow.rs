@@ -17,13 +17,15 @@ fn matches(target: &str, entry: &str) -> bool {
 }
 
 /// True when `target` is on the allow-list. This crate's own client spans carry
-/// only a method, a host and a status (`client.rs`), and its crash and error
-/// events carry only a location, a thread and a content-safe payload
-/// (`panic.rs`), so both are always allowed — under the same equality-or-`::`
-/// rule as a caller's entry, never a bare prefix.
+/// only a method, a host, a path and a status (`client.rs`), its crash and
+/// error events carry only a location, a thread and a content-safe payload
+/// (`panic.rs`), and its process sampler carries only RSS and CPU
+/// (`process.rs`) — all three are always allowed, under the same
+/// equality-or-`::` rule as a caller's entry, never a bare prefix.
 pub(crate) fn allowed(target: &str, allow: &[&str]) -> bool {
     matches(target, crate::client::TARGET)
         || matches(target, crate::panic::TARGET)
+        || matches(target, crate::process::TARGET)
         || allow.iter().any(|entry| matches(target, entry))
 }
 
@@ -79,6 +81,15 @@ mod tests {
         assert!(allowed(crate::panic::TARGET, &[]));
         assert!(
             !allowed("telemetry::panicky", &[]),
+            "the force-allow is not a bare prefix either"
+        );
+    }
+
+    #[test]
+    fn the_crates_own_process_sampler_is_always_allowed() {
+        assert!(allowed(crate::process::TARGET, &[]));
+        assert!(
+            !allowed("telemetry::processes", &[]),
             "the force-allow is not a bare prefix either"
         );
     }

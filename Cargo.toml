@@ -1,6 +1,6 @@
 [package]
 name = "telemetry"
-version = "0.4.0"
+version = "0.5.0"
 description = "The household's one Rust telemetry call: stderr for the developer, allow-listed OTLP/HTTP for the corpus"
 authors = ["poodle64"]
 license = "MIT"
@@ -46,7 +46,14 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "tls1
 reqwest-middleware = "0.5"
 reqwest-tracing = { version = "0.7", features = ["opentelemetry_0_32"] }
 
+# The process sampler's own timer; it spawns nothing itself (see process.rs),
+# so "rt" is the caller's concern, never this crate's.
+tokio = { version = "1", features = ["time"] }
+# RSS and CPU for the process sampler, cross-platform (macOS/Linux/Windows —
+# the whole desktop fleet this crate serves).
+sysinfo = "0.33"
+
 [dev-dependencies]
 opentelemetry_sdk = { version = "0.32", features = ["logs", "trace", "testing"] }
 serial_test = "4"
-tokio = { version = "1", features = ["rt", "net", "time"] }
+tokio = { version = "1", features = ["rt", "net", "time", "macros"] }

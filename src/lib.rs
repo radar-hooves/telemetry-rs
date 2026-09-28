@@ -5,6 +5,9 @@
 //! corpus; [`http_client`] carries W3C trace context outbound; a panic anywhere
 //! in the process reaches the corpus too, through the same one call — see
 //! `panic` for the content-safety rule that governs what a crash may carry.
+//! [`sample_process_metrics`] is the same idea for the process's own RSS and
+//! CPU: spawn it once on the caller's runtime and it reports every 60s,
+//! forever, on the same force-allowed footing as a client span or a crash.
 //!
 //! The exporter may arrive from the environment, as `OTEL_EXPORTER_OTLP_*`, or
 //! from the application's own settings through [`Guard::set_exporter`] — an app
@@ -12,8 +15,8 @@
 //! first: where it set one, a pane cannot change it. [`probe`] proves an endpoint
 //! answers before an application saves it.
 //!
-//! The crate writes no file, exports no metrics, reads no settings file of its
-//! own, and knows no broker, identity or token.
+//! The crate writes no file, reads no settings file of its own, and knows no
+//! broker, identity or token.
 //!
 //! Contract: `rules-library/platform/telemetry.md`; wiring:
 //! `docs/master/reference/guide-telemetry.md` §Rust.
@@ -23,9 +26,11 @@ mod bearer;
 mod client;
 mod panic;
 mod probe;
+mod process;
 
 pub use panic::{report_error, report_error_with_cause};
 pub use probe::{ProbeError, probe};
+pub use process::sample_process_metrics;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -890,11 +895,12 @@ mod tests {
         clear_env();
     }
 
-    /// The client span must carry no path, no query and no error string, because
-    /// its target is force-allowed past the caller's allow-list.
+    /// The client span carries the path but never the query string or an error
+    /// string, because its target is force-allowed past the caller's allow-list
+    /// and a Subsonic query carries the salted auth token.
     #[test]
     #[serial]
-    fn a_failed_request_records_no_url_and_no_error_fields() {
+    fn a_failed_request_records_the_path_but_never_the_query_or_an_error() {
         let (providers, _, spans) = in_memory();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -916,10 +922,11 @@ mod tests {
         let exported = spans.get_finished_spans().expect("spans");
         let span = exported.first().expect("the client span was exported");
         let rendered = format!("{:?}", span.attributes);
-        for forbidden in ["secret-term", "search", "library", "token", "error."] {
+        for forbidden in ["secret-term", "token", "error."] {
             assert!(!rendered.contains(forbidden), "{forbidden} in {rendered}");
         }
         assert!(rendered.contains("server.address"), "{rendered}");
+        assert!(rendered.contains("/library/search"), "{rendered}");
     }
 
     #[test]

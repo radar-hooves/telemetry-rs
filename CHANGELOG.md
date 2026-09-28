@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+The client span (`telemetry::client`, force-allowed) now carries `url.path` — `/Items/{id}`, `/rest/search3.view` — alongside the method, host and status it already recorded. Still on the operator's 28/09/2026 ruling: the path is his own listening history and travels to his stack. The query string is unchanged — still withheld, since that is where a Subsonic request signs its auth token, and `url::Url::path()` never includes it.
+
+Added to the public surface — `sample_process_metrics()`, a future that samples this process's RSS and CPU every 60 seconds and emits them as one event on the crate's own force-allowed `telemetry::process` target, forever. A process's resource use carries no listening history or dictation either, so it needs no allow-list entry from the caller. The crate spawns nothing itself — as `http_client()` hands back a client rather than driving requests — so the caller puts the future on their own runtime once, at startup (`tauri::async_runtime::spawn(telemetry::sample_process_metrics())` for a Tauri app).
+
 ## 0.4.0
 
 **Breaking:** a panic event no longer withholds a formatted message. v0.3.0's rule — export the payload only when its type proves it holds no runtime data, and otherwise say the message was withheld — is overruled by the operator (28/09/2026): "the telemetry stack is my own and I need to have high quality telemetry in order to be able to develop and improve these systems, so we shouldn't be timid about what we capture if it's going to lead to a better dev experience." The OTLP endpoint is his own self-hosted collector, so nothing this crate now captures leaves his estate.

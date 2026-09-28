@@ -3,7 +3,7 @@
 The household's one Rust telemetry call. It writes no file, exports no metrics, reads no settings file of its own, and knows no broker, identity or token: the endpoint and the credential reach it as standard environment variables the fleet sets, or as a value the application hands it from its own Settings pane.
 
 ```toml
-telemetry = { git = "https://github.com/radar-hooves/telemetry-rs", tag = "v0.4.0" }
+telemetry = { git = "https://github.com/radar-hooves/telemetry-rs", tag = "v0.5.0" }
 ```
 
 ## The one call
@@ -44,7 +44,17 @@ Both halves are required. `app.manage(init(..))` on its own never drops the `Gua
 
 Call `init` from the setup hook or `main`, never inside a Tokio task: it builds the exporters' blocking HTTP client. The same goes for the drop — after its bounded flush it joins that client's own runtime thread.
 
-`telemetry::http_client()` returns an async `reqwest` client that carries W3C `traceparent` on every request and opens a client span recording the method, the host and the status — never a path, a query or an error string, any of which can carry a search term or a query-string credential. It sets a ten-second connect timeout, which a caller cannot add per request: only the total timeout has a `RequestBuilder` form, so without it a black-holed LAN address hangs for the whole total timeout instead of failing at connect. Add a per-request `timeout` where a call has its own deadline.
+`telemetry::http_client()` returns an async `reqwest` client that carries W3C `traceparent` on every request and opens a client span recording the method, the host, the path and the status, never the query string or an error string: either can carry a search term or a query-string credential, and a Subsonic request signs its auth token there. It sets a ten-second connect timeout, which a caller cannot add per request: only the total timeout has a `RequestBuilder` form, so without it a black-holed LAN address hangs for the whole total timeout instead of failing at connect. Add a per-request `timeout` where a call has its own deadline.
+
+## The process sampler
+
+`telemetry::sample_process_metrics()` is a future that samples this process's own RSS and CPU every 60 seconds and emits them as one event on `telemetry::process`, force-allowed exactly as the client span and the crash reporter are: a process's resource use carries no listening history or dictation either way. The crate spawns nothing itself, so put the future on the caller's own runtime once, at startup:
+
+```rust
+tauri::async_runtime::spawn(telemetry::sample_process_metrics());
+```
+
+It never returns.
 
 ## The Settings pane
 
