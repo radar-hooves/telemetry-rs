@@ -1,5 +1,7 @@
 # telemetry-rs
 
+> **Moved.** This crate now lives in [radar-hooves/app-factory](https://github.com/radar-hooves/app-factory) under `kits/rust`, as `telemetry` beside `tauri-plugin-telemetry`, released on the factory's own tags. Depend on it there. This repository is archived; its existing tags stay fetchable.
+
 The household's one Rust telemetry call. It writes no file, exports no metrics, reads no settings file of its own, and knows no broker, identity or token: the endpoint and the credential reach it as standard environment variables the fleet sets, or as a value the application hands it from its own Settings pane.
 
 ```toml
